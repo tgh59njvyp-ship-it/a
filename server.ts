@@ -47,7 +47,13 @@ async function startServer() {
         cleanUrl = 'https://' + cleanUrl;
       }
 
-      const urlObj = new URL(cleanUrl);
+      let urlObj: URL;
+      try {
+        urlObj = new URL(cleanUrl);
+      } catch {
+        urlObj = new URL(encodeURI(cleanUrl));
+      }
+
       const pathname = urlObj.pathname.replace(/\/+$/, '');
       const parts = pathname.split('/').filter(Boolean);
 
@@ -159,9 +165,9 @@ async function startServer() {
 
       const zipBuffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
 
-      const safeZipName = zipName.replace(/[^a-zA-Z0-9_\-\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uffef\u4e00-\u9faf]/g, '_');
+      const asciiZipName = zipName.replace(/[^a-zA-Z0-9_\-]/g, '_') || 'pinterest_images';
       res.setHeader('Content-Type', 'application/zip');
-      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(safeZipName)}.zip"`);
+      res.setHeader('Content-Disposition', `attachment; filename="${asciiZipName}.zip"; filename*=UTF-8''${encodeURIComponent(zipName)}.zip`);
       res.setHeader('Content-Length', zipBuffer.length.toString());
       res.send(zipBuffer);
     } catch (err: any) {

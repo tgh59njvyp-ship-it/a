@@ -19,18 +19,30 @@ export const UrlInputSection: React.FC<UrlInputSectionProps> = ({
 }) => {
   const [pasteSuccess, setPasteSuccess] = useState(false);
 
+  const [pasteError, setPasteError] = useState(false);
+
   const handlePasteClipboard = async () => {
     try {
-      if (navigator.clipboard) {
+      if (navigator.clipboard && navigator.clipboard.readText) {
         const text = await navigator.clipboard.readText();
-        if (text) {
-          setUrl(text);
+        if (text && text.trim()) {
+          setUrl(text.trim());
           setPasteSuccess(true);
+          setPasteError(false);
           setTimeout(() => setPasteSuccess(false), 2000);
+          return;
         }
       }
+      throw new Error('Clipboard empty or restricted');
     } catch (err) {
-      console.log('Clipboard paste error:', err);
+      console.log('Clipboard paste fallback:', err);
+      setPasteError(true);
+      setTimeout(() => setPasteError(false), 3000);
+      // Focus input so user can long-press / paste directly
+      const inputEl = document.querySelector('input[type="text"]') as HTMLInputElement;
+      if (inputEl) {
+        inputEl.focus();
+      }
     }
   };
 
@@ -83,6 +95,11 @@ export const UrlInputSection: React.FC<UrlInputSectionProps> = ({
                     <>
                       <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
                       <span className="text-emerald-400">貼付完了</span>
+                    </>
+                  ) : pasteError ? (
+                    <>
+                      <Clipboard className="w-3.5 h-3.5 text-amber-400" />
+                      <span className="text-amber-300">手動ペースト</span>
                     </>
                   ) : (
                     <>
