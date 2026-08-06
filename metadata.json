@@ -1,0 +1,6 @@
+{
+  "name": "Pinterest Board Downloader",
+  "description": "PinterestのボードURLから画像を一括ダウンロードできるスマホ向けアプリ",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
