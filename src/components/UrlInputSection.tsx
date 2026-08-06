@@ -21,12 +21,23 @@ export const UrlInputSection: React.FC<UrlInputSectionProps> = ({
 
   const [pasteError, setPasteError] = useState(false);
 
+  // Extract clean URL from share text
+  const cleanPastedText = (rawText: string) => {
+    if (!rawText) return '';
+    const match = rawText.match(/https?:\/\/[^\s"'<>「」『』()]+/i);
+    if (match) {
+      return match[0].replace(/[.,;:!?]+$/, '');
+    }
+    return rawText.trim();
+  };
+
   const handlePasteClipboard = async () => {
     try {
       if (navigator.clipboard && navigator.clipboard.readText) {
         const text = await navigator.clipboard.readText();
         if (text && text.trim()) {
-          setUrl(text.trim());
+          const cleaned = cleanPastedText(text);
+          setUrl(cleaned);
           setPasteSuccess(true);
           setPasteError(false);
           setTimeout(() => setPasteSuccess(false), 2000);
@@ -38,7 +49,6 @@ export const UrlInputSection: React.FC<UrlInputSectionProps> = ({
       console.log('Clipboard paste fallback:', err);
       setPasteError(true);
       setTimeout(() => setPasteError(false), 3000);
-      // Focus input so user can long-press / paste directly
       const inputEl = document.querySelector('input[type="text"]') as HTMLInputElement;
       if (inputEl) {
         inputEl.focus();
@@ -48,8 +58,10 @@ export const UrlInputSection: React.FC<UrlInputSectionProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (url.trim()) {
-      onFetch();
+    const cleaned = cleanPastedText(url);
+    if (cleaned) {
+      if (cleaned !== url) setUrl(cleaned);
+      onFetch(cleaned);
     }
   };
 
@@ -72,7 +84,7 @@ export const UrlInputSection: React.FC<UrlInputSectionProps> = ({
               type="text"
               value={url}
               onChange={(e) => setUrl(e.target.value)}
-              placeholder="https://www.pinterest.jp/user/board/ または pin.it/..."
+              placeholder="https://www.pinterest.jp/ユーザー名/ボード名/ または pin.it/..."
               className="w-full bg-slate-800/90 border border-slate-700/80 rounded-xl pl-10 pr-20 py-3 text-sm text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-rose-500 focus:border-rose-500 transition shadow-inner"
             />
 
@@ -110,6 +122,11 @@ export const UrlInputSection: React.FC<UrlInputSectionProps> = ({
                 </button>
               )}
             </div>
+          </div>
+
+          <div className="text-[11px] text-slate-400 flex flex-wrap gap-x-3 gap-y-1 px-1">
+            <span>💡 対応URL: ボードURL / 短縮URL(pin.it) / ピン単体URL</span>
+            <span className="text-slate-500">※共有テキストをそのまま貼り付けても自動抽出されます</span>
           </div>
 
           <button

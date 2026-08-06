@@ -39,11 +39,25 @@ async function startServer() {
     return { original, medium, thumbnail };
   }
 
+  // Helper to extract clean URL from pasted text (e.g. "Check out this board on Pinterest: https://pin.it/xxx")
+  function extractUrlFromText(text: string): string {
+    if (!text) return '';
+    const match = text.match(/https?:\/\/[^\s"'<>「」『』()]+/i);
+    if (match) {
+      return match[0].replace(/[.,;:!?]+$/, '');
+    }
+    return text.trim();
+  }
+
   // Safe URL encoder to prevent undici / Node fetch "The string did not match the expected pattern" or invalid URL errors
   function safeEncodeUrl(rawUrl: string): string {
     if (!rawUrl || typeof rawUrl !== 'string') return 'https://www.pinterest.com';
+    
+    // First extract URL if full share text was passed
+    const extracted = extractUrlFromText(rawUrl);
+
     // Remove control characters, newlines, and convert full-width spaces
-    let clean = rawUrl
+    let clean = extracted
       .replace(/[\r\n\t]/g, '')
       .replace(/\u3000/g, ' ')
       .trim();
@@ -262,32 +276,78 @@ async function startServer() {
         });
       }
 
-      // Check for pin.it shortened links and resolve redirects
-      let targetUrl = trimmedUrl;
+      // Extract clean URL from raw input (in case full share text was pasted)
+      let targetUrl = extractUrlFromText(trimmedUrl);
       if (!targetUrl.startsWith('http://') && !targetUrl.startsWith('https://')) {
         targetUrl = 'https://' + targetUrl;
       }
 
+      // Check for pin.it shortened links and resolve redirects via GET
       if (targetUrl.includes('pin.it/')) {
         try {
-          const headResp = await safeFetch(targetUrl, {
-            method: 'HEAD',
+          const getResp = await safeFetch(targetUrl, {
+            method: 'GET',
             redirect: 'follow',
             headers: {
-              'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1'
+              'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
             }
           });
-          targetUrl = headResp.url || targetUrl;
-        } catch {
-          // Continue with original URL
+          if (getResp.url) {
+            targetUrl = getResp.url;
+          } else {
+            const html = await getResp.text();
+            const $ = cheerio.load(html);
+            const canonical = $('link[rel="canonical"]').attr('href') || $('meta[property="og:url"]').attr('content');
+            if (canonical) {
+              targetUrl = canonical;
+            }
+          }
+        } catch (err) {
+          console.log('pin.it resolve error:', err);
         }
       }
 
-      const parsed = parsePinterestUrl(targetUrl);
+      let parsed = parsePinterestUrl(targetUrl);
       const extractedPins: PinItem[] = [];
       let boardTitle = 'Pinterest Board';
       let boardDesc = '';
       let authorName = '';
+
+      // Method 0: If single pin URL (/pin/12345/), fetch single pin details
+      if (parsed?.isPin && parsed.pinId) {
+        try {
+          const pinPageResp = await safeFetch(`https://www.pinterest.com/pin/${parsed.pinId}/`, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
+            }
+          });
+          if (pinPageResp.ok) {
+            const html = await pinPageResp.text();
+            const $ = cheerio.load(html);
+            const ogImage = $('meta[property="og:image"]').attr('content');
+            const ogTitle = $('meta[property="og:title"]').attr('content') || $('title').text() || 'Pinterest Pin';
+            const ogDesc = $('meta[property="og:description"]').attr('content') || '';
+
+            if (ogImage) {
+              const res = getHighResUrl(ogImage);
+              extractedPins.push({
+                id: parsed.pinId,
+                title: ogTitle,
+                description: ogDesc,
+                originalUrl: res.original,
+                mediumUrl: res.medium,
+                thumbnailUrl: res.thumbnail,
+                link: `https://www.pinterest.com/pin/${parsed.pinId}/`,
+                boardTitle: 'Single Pin'
+              });
+              boardTitle = ogTitle;
+              boardDesc = ogDesc;
+            }
+          }
+        } catch (pinErr) {
+          console.log('Single pin fetch error:', pinErr);
+        }
+      }
 
       // Method 1: Try Pinterest RSS Feed (Very reliable for public boards)
       if (parsed?.username && parsed?.boardName && !parsed.isPin) {

@@ -128,29 +128,32 @@ export default function App() {
 
       const data = await response.json();
 
-      if (!response.ok || !data.success) {
+      if (!response.ok) {
         throw new Error(data.error || 'ボード情報の取得に失敗しました');
       }
 
-      const boardData: BoardData = data.board;
-      setBoard(boardData);
+      if (data.board) {
+        const boardData: BoardData = data.board;
+        setBoard(boardData);
 
-      // Select all pins by default for instant 1-tap download
-      const allIds = new Set(boardData.pins.map((p) => p.id));
-      setSelectedPinIds(allIds);
+        // Select all pins by default for instant 1-tap download
+        const allIds = new Set(boardData.pins.map((p) => p.id));
+        setSelectedPinIds(allIds);
 
-      if (data.isFallbackDemo) {
-        setStatusMessage(data.message || '公開ボードの画像抽出に失敗したため、デモサンプルを表示しています。');
+        if (data.isFallbackDemo) {
+          setStatusMessage(data.message || '公開ボードの画像取得が完了できなかったため、サンプル表示に切り替えました。');
+        } else {
+          setStatusMessage(`${boardData.pins.length}枚の画像を取得しました！`);
+          setTimeout(() => setStatusMessage(null), 4000);
+        }
+
+        saveToHistory(boardData);
+      } else {
+        throw new Error('ボードデータが見つかりませんでした');
       }
-
-      saveToHistory(boardData);
     } catch (err: any) {
       console.error('Fetch board error:', err);
-      let errMsg = err?.message || '';
-      if (!errMsg || /pattern|fetch|SyntaxError|unexpected/i.test(errMsg)) {
-        errMsg = '入力されたURLの形式をご確認ください。公開設定のPinterestボードURLをお試しください。';
-      }
-      setError(errMsg);
+      setError(err?.message || '画像の取得に失敗しました。公開設定のPinterestボードURLかpin.it短縮URLをお試しください。');
     } finally {
       setIsLoading(false);
     }
