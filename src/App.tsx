@@ -189,9 +189,14 @@ export default function App() {
 
   // Single download handler
   const handleDownloadSingle = async (pin: PinItem) => {
-    const imgUrl = getPinImageUrl(pin, quality);
-    const filename = `${pin.title ? pin.title.substring(0, 20) : 'pin'}_${pin.id}.${quality === 'original' ? 'jpg' : 'jpg'}`;
-    await downloadSingleImage(imgUrl, filename);
+    const rawUrl = getPinImageUrl(pin, quality);
+    const proxiedUrl = getProxiedImageUrl(rawUrl);
+    const safeTitle = (pin.title || 'pin')
+      .replace(/[^a-zA-Z0-9_\-\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uffef\u4e00-\u9faf]/g, '_')
+      .replace(/[\r\n]+/g, '')
+      .substring(0, 20);
+    const filename = `${safeTitle || 'pin'}_${pin.id || Date.now()}.jpg`;
+    await downloadSingleImage(proxiedUrl, filename);
   };
 
   // Batch ZIP Download Handler
@@ -205,12 +210,18 @@ export default function App() {
       const selectedPins = board.pins.filter((p) => selectedPinIds.has(p.id));
       const imageUrls = selectedPins.map((p) => getPinImageUrl(p, quality));
 
+      const rawTitle = board.title || 'pinterest_board';
+      const safeZipName = rawTitle
+        .replace(/[^a-zA-Z0-9_\-\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uffef\u4e00-\u9faf]/g, '_')
+        .replace(/[\r\n]+/g, '')
+        .trim() || 'pinterest_board';
+
       const resp = await fetch('/api/download-zip', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           imageUrls,
-          zipName: `${board.title || 'pinterest_board'}_${quality}`
+          zipName: `${safeZipName}_${quality}`
         })
       });
 
@@ -221,14 +232,17 @@ export default function App() {
       const blob = await resp.blob();
       const blobUrl = window.URL.createObjectURL(blob);
 
+      // Safe ASCII filename for browser a.download attribute to prevent Pattern mismatch DOMExceptions
+      const asciiZipFilename = `${safeZipName.replace(/[^a-zA-Z0-9_\-]/g, '_') || 'board'}_${quality}.zip`;
+
       const a = document.createElement('a');
       a.href = blobUrl;
-      a.download = `${board.title || 'pinterest_board'}_${quality}.zip`;
+      a.download = asciiZipFilename;
       document.body.appendChild(a);
       a.click();
 
       setTimeout(() => {
-        document.body.removeChild(a);
+        if (a.parentNode) document.body.removeChild(a);
         window.URL.revokeObjectURL(blobUrl);
       }, 1000);
 
@@ -236,7 +250,7 @@ export default function App() {
       setTimeout(() => setProgressText(''), 3000);
     } catch (err: any) {
       console.error('ZIP download error:', err);
-      alert('ZIP保存エラー: ' + err.message);
+      alert('ZIP保存エラー: ' + (err.message || 'エラーが発生しました'));
     } finally {
       setIsDownloadingZip(false);
     }
@@ -253,9 +267,14 @@ export default function App() {
     for (const pin of selectedPins) {
       completed++;
       setProgressText(`1枚ずつ保存中 (${completed}/${selectedPins.length})...`);
-      const imgUrl = getPinImageUrl(pin, quality);
-      const filename = `pin_${String(completed).padStart(3, '0')}.jpg`;
-      await downloadSingleImage(imgUrl, filename);
+      const rawUrl = getPinImageUrl(pin, quality);
+      const proxiedUrl = getProxiedImageUrl(rawUrl);
+      const safeTitle = (pin.title || 'pin')
+        .replace(/[^a-zA-Z0-9_\-\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uffef\u4e00-\u9faf]/g, '_')
+        .replace(/[\r\n]+/g, '')
+        .substring(0, 15);
+      const filename = `pin_${String(completed).padStart(3, '0')}_${safeTitle || 'img'}.jpg`;
+      await downloadSingleImage(proxiedUrl, filename);
       // Brief pause to prevent browser popup block
       await new Promise((resolve) => setTimeout(resolve, 400));
     }

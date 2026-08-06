@@ -41,25 +41,46 @@ async function startServer() {
 
   // Safe URL encoder to prevent undici / Node fetch "The string did not match the expected pattern" or invalid URL errors
   function safeEncodeUrl(rawUrl: string): string {
-    if (!rawUrl) return '';
+    if (!rawUrl || typeof rawUrl !== 'string') return 'https://www.pinterest.com';
+    let clean = rawUrl.trim();
+    if (!clean) return 'https://www.pinterest.com';
+
+    if (!/^https?:\/\//i.test(clean)) {
+      clean = 'https://' + clean;
+    }
+
     try {
-      let clean = rawUrl.trim();
-      if (!clean.startsWith('http://') && !clean.startsWith('https://')) {
-        clean = 'https://' + clean;
-      }
-      try {
-        return new URL(clean).href;
-      } catch {
-        return new URL(encodeURI(clean)).href;
-      }
+      return new URL(clean).href;
     } catch {
-      return encodeURI(rawUrl);
+      try {
+        return new URL(encodeURI(clean)).href;
+      } catch {
+        try {
+          const match = clean.match(/^(https?:\/\/)?([^\/]+)(.*)$/i);
+          if (match) {
+            const domain = match[2];
+            const path = encodeURI(match[3] || '');
+            return `https://${domain}${path}`;
+          }
+        } catch {
+          // Ignore
+        }
+        return 'https://www.pinterest.com';
+      }
     }
   }
 
   async function safeFetch(urlStr: string, options?: RequestInit) {
-    const encodedUrl = safeEncodeUrl(urlStr);
-    return await fetch(encodedUrl, options);
+    try {
+      const encodedUrl = safeEncodeUrl(urlStr);
+      if (!encodedUrl || !encodedUrl.startsWith('http')) {
+        throw new Error('Invalid URL pattern');
+      }
+      return await fetch(encodedUrl, options);
+    } catch (err: any) {
+      console.error('safeFetch error:', urlStr, err?.message);
+      throw err;
+    }
   }
 
   // Helper to extract Pinterest board path: /username/boardname/
