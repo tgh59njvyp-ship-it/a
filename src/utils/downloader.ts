@@ -39,15 +39,17 @@ export async function downloadSingleImage(url: string, filename: string): Promis
     const blob = await response.blob();
     const blobUrl = window.URL.createObjectURL(blob);
 
+    const safeFilename = filename.replace(/[^a-zA-Z0-9_\-.]/g, '_') || 'pin_image.jpg';
+
     const a = document.createElement('a');
     a.style.display = 'none';
     a.href = blobUrl;
-    a.download = filename;
+    a.download = safeFilename;
     document.body.appendChild(a);
     a.click();
 
     setTimeout(() => {
-      document.body.removeChild(a);
+      if (a.parentNode) document.body.removeChild(a);
       window.URL.revokeObjectURL(blobUrl);
     }, 1000);
 
@@ -55,7 +57,13 @@ export async function downloadSingleImage(url: string, filename: string): Promis
   } catch (err) {
     console.error('Download error:', err);
     // Fallback: Open in new window for user to long-press save
-    window.open(url, '_blank');
+    try {
+      if (url) {
+        window.open(url, '_blank');
+      }
+    } catch {
+      // Ignore
+    }
     return false;
   }
 }

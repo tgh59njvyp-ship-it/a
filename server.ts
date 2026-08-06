@@ -39,23 +39,44 @@ async function startServer() {
     return { original, medium, thumbnail };
   }
 
+  // Safe URL encoder to prevent undici / Node fetch "The string did not match the expected pattern" or invalid URL errors
+  function safeEncodeUrl(rawUrl: string): string {
+    if (!rawUrl) return '';
+    try {
+      let clean = rawUrl.trim();
+      if (!clean.startsWith('http://') && !clean.startsWith('https://')) {
+        clean = 'https://' + clean;
+      }
+      try {
+        return new URL(clean).href;
+      } catch {
+        return new URL(encodeURI(clean)).href;
+      }
+    } catch {
+      return encodeURI(rawUrl);
+    }
+  }
+
+  async function safeFetch(urlStr: string, options?: RequestInit) {
+    const encodedUrl = safeEncodeUrl(urlStr);
+    return await fetch(encodedUrl, options);
+  }
+
   // Helper to extract Pinterest board path: /username/boardname/
   function parsePinterestUrl(rawUrl: string): { username?: string; boardName?: string; isPin?: boolean; pinId?: string } | null {
     try {
-      let cleanUrl = rawUrl.trim();
-      if (!cleanUrl.startsWith('http://') && !cleanUrl.startsWith('https://')) {
-        cleanUrl = 'https://' + cleanUrl;
-      }
-
-      let urlObj: URL;
-      try {
-        urlObj = new URL(cleanUrl);
-      } catch {
-        urlObj = new URL(encodeURI(cleanUrl));
-      }
+      const cleanUrl = safeEncodeUrl(rawUrl);
+      const urlObj = new URL(cleanUrl);
 
       const pathname = urlObj.pathname.replace(/\/+$/, '');
-      const parts = pathname.split('/').filter(Boolean);
+      const rawParts = pathname.split('/').filter(Boolean);
+      const parts = rawParts.map((p) => {
+        try {
+          return decodeURIComponent(p);
+        } catch {
+          return p;
+        }
+      });
 
       // Single Pin URL: /pin/123456789/
       if (parts[0] === 'pin' && parts[1]) {
@@ -94,7 +115,7 @@ async function startServer() {
         return res.status(400).send('Image URL is required');
       }
 
-      const response = await fetch(imageUrl, {
+      const response = await safeFetch(imageUrl, {
         headers: {
           'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1',
           'Referer': 'https://www.pinterest.com/',
@@ -139,7 +160,7 @@ async function startServer() {
           chunk.map(async (url: string, index: number) => {
             try {
               const imgIndex = i + index + 1;
-              const resp = await fetch(url, {
+              const resp = await safeFetch(url, {
                 headers: {
                   'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1',
                   'Referer': 'https://www.pinterest.com/'
@@ -217,7 +238,7 @@ async function startServer() {
 
       if (targetUrl.includes('pin.it/')) {
         try {
-          const headResp = await fetch(targetUrl, {
+          const headResp = await safeFetch(targetUrl, {
             method: 'HEAD',
             redirect: 'follow',
             headers: {
@@ -238,9 +259,11 @@ async function startServer() {
 
       // Method 1: Try Pinterest RSS Feed (Very reliable for public boards)
       if (parsed?.username && parsed?.boardName && !parsed.isPin) {
-        const rssUrl = `https://www.pinterest.com/${parsed.username}/${parsed.boardName}.rss`;
+        const safeUser = encodeURIComponent(parsed.username);
+        const safeBoard = encodeURIComponent(parsed.boardName);
+        const rssUrl = `https://www.pinterest.com/${safeUser}/${safeBoard}.rss`;
         try {
-          const rssResp = await fetch(rssUrl, {
+          const rssResp = await safeFetch(rssUrl, {
             headers: {
               'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
               'Accept': 'application/rss+xml, application/xml, text/xml, */*'
@@ -289,7 +312,7 @@ async function startServer() {
       // Method 2: Fetch HTML page directly if RSS didn't yield pins
       if (extractedPins.length === 0) {
         try {
-          const pageResp = await fetch(targetUrl, {
+          const pageResp = await safeFetch(targetUrl, {
             headers: {
               'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
               'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8',
@@ -451,7 +474,21 @@ Return JSON format:
 
     } catch (err: any) {
       console.error('Fetch board error:', err);
-      return res.status(500).json({ error: 'ボードの読み込み中にエラーが発生しました: ' + err.message });
+      const fallbackPreset = PRESET_BOARDS[0];
+      return res.json({
+        success: true,
+        isFallbackDemo: true,
+        message: '指定のURLから画像を取得できませんでした。URLをご確認ください。デモ表示に切り替えました。',
+        board: {
+          url: req.body?.url || '',
+          title: 'お試しサンプルボード',
+          description: '公開設定のPinterestボードURLを入力するか、下のワンタップサンプルでお試しください。',
+          author: 'Pinterest Board',
+          pinCount: fallbackPreset.pins.length,
+          pins: fallbackPreset.pins,
+          fetchedAt: new Date().toISOString()
+        }
+      });
     }
   });
 
