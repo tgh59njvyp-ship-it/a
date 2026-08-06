@@ -42,25 +42,36 @@ async function startServer() {
   // Safe URL encoder to prevent undici / Node fetch "The string did not match the expected pattern" or invalid URL errors
   function safeEncodeUrl(rawUrl: string): string {
     if (!rawUrl || typeof rawUrl !== 'string') return 'https://www.pinterest.com';
-    let clean = rawUrl.trim();
+    // Remove control characters, newlines, and convert full-width spaces
+    let clean = rawUrl
+      .replace(/[\r\n\t]/g, '')
+      .replace(/\u3000/g, ' ')
+      .trim();
+
     if (!clean) return 'https://www.pinterest.com';
 
+    // Auto prepend scheme
     if (!/^https?:\/\//i.test(clean)) {
       clean = 'https://' + clean;
     }
 
     try {
-      return new URL(clean).href;
+      const urlObj = new URL(clean);
+      return urlObj.href;
     } catch {
       try {
-        return new URL(encodeURI(clean)).href;
+        const encoded = encodeURI(clean);
+        return new URL(encoded).href;
       } catch {
         try {
+          // Manual fallback URL construction
           const match = clean.match(/^(https?:\/\/)?([^\/]+)(.*)$/i);
           if (match) {
-            const domain = match[2];
+            const domain = match[2].replace(/[^a-zA-Z0-9.\-]/g, '');
             const path = encodeURI(match[3] || '');
-            return `https://${domain}${path}`;
+            if (domain) {
+              return `https://${domain}${path}`;
+            }
           }
         } catch {
           // Ignore
@@ -70,16 +81,16 @@ async function startServer() {
     }
   }
 
-  async function safeFetch(urlStr: string, options?: RequestInit) {
+  async function safeFetch(urlStr: string, options?: RequestInit): Promise<Response> {
     try {
       const encodedUrl = safeEncodeUrl(urlStr);
       if (!encodedUrl || !encodedUrl.startsWith('http')) {
-        throw new Error('Invalid URL pattern');
+        return new Response(null, { status: 400, statusText: 'Invalid URL' });
       }
       return await fetch(encodedUrl, options);
     } catch (err: any) {
-      console.error('safeFetch error:', urlStr, err?.message);
-      throw err;
+      console.error('safeFetch caught exception:', urlStr, err?.message);
+      return new Response(null, { status: 500, statusText: 'Fetch exception' });
     }
   }
 
@@ -392,8 +403,8 @@ async function startServer() {
             if (pwsDataJson) {
               const jsonStr = JSON.stringify(pwsDataJson);
               const imgMatches = jsonStr.match(/https:\/\/i\.pinimg\.com\/[^\s"'\\]+/g) || [];
-              imgMatches.forEach((url, idx) => {
-                const cleanUrl = url.replace(/\\/g, '');
+              imgMatches.forEach((rawImgUrl: string, idx: number) => {
+                const cleanUrl = String(rawImgUrl).replace(/\\/g, '');
                 if (!cleanUrl.includes('/75x75/') && !cleanUrl.includes('/30x30/')) {
                   const res = getHighResUrl(cleanUrl);
                   if (!extractedPins.some((p) => p.originalUrl === res.original)) {

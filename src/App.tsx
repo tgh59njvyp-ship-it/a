@@ -146,7 +146,11 @@ export default function App() {
       saveToHistory(boardData);
     } catch (err: any) {
       console.error('Fetch board error:', err);
-      setError(err.message || '通信エラーが発生しました。Pinterest URLをご確認ください。');
+      let errMsg = err?.message || '';
+      if (!errMsg || /pattern|fetch|SyntaxError|unexpected/i.test(errMsg)) {
+        errMsg = '入力されたURLの形式をご確認ください。公開設定のPinterestボードURLをお試しください。';
+      }
+      setError(errMsg);
     } finally {
       setIsLoading(false);
     }
