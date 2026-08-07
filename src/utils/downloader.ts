@@ -21,7 +21,11 @@ export function getPinImageUrl(pin: PinItem, quality: ImageQuality): string {
  */
 export function getProxiedImageUrl(rawUrl: string): string {
   if (!rawUrl) return '';
-  if (rawUrl.startsWith('data:') || rawUrl.includes('images.unsplash.com')) {
+  if (
+    rawUrl.startsWith('data:') ||
+    rawUrl.includes('images.unsplash.com') ||
+    rawUrl.startsWith('/api/proxy-image')
+  ) {
     return rawUrl;
   }
   return `/api/proxy-image?url=${encodeURIComponent(rawUrl)}`;

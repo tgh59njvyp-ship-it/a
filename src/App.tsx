@@ -194,16 +194,24 @@ export default function App() {
     setSelectedPinIds(new Set());
   };
 
+  // Helper for safe filenames
+  const sanitizeTitle = (str: string, maxLength = 20): string => {
+    if (!str) return 'pin';
+    return (
+      str
+        .replace(/[\r\n\t]+/g, '')
+        .replace(/[^a-zA-Z0-9_\-\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\u4e00-\u9faf\uff00-\uffef]/g, '_')
+        .replace(/_+/g, '_')
+        .substring(0, maxLength) || 'pin'
+    );
+  };
+
   // Single download handler
   const handleDownloadSingle = async (pin: PinItem) => {
     const rawUrl = getPinImageUrl(pin, quality);
-    const proxiedUrl = getProxiedImageUrl(rawUrl);
-    const safeTitle = (pin.title || 'pin')
-      .replace(/[^a-zA-Z0-9_\-\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uffef\u4e00-\u9faf]/g, '_')
-      .replace(/[\r\n]+/g, '')
-      .substring(0, 20);
-    const filename = `${safeTitle || 'pin'}_${pin.id || Date.now()}.jpg`;
-    await downloadSingleImage(proxiedUrl, filename);
+    const safeTitle = sanitizeTitle(pin.title || 'pin', 20);
+    const filename = `${safeTitle}_${pin.id || Date.now()}.jpg`;
+    await downloadSingleImage(rawUrl, filename);
   };
 
   // Batch ZIP Download Handler
@@ -218,10 +226,7 @@ export default function App() {
       const imageUrls = selectedPins.map((p) => getPinImageUrl(p, quality));
 
       const rawTitle = board.title || 'pinterest_board';
-      const safeZipName = rawTitle
-        .replace(/[^a-zA-Z0-9_\-\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uffef\u4e00-\u9faf]/g, '_')
-        .replace(/[\r\n]+/g, '')
-        .trim() || 'pinterest_board';
+      const safeZipName = sanitizeTitle(rawTitle, 25) || 'pinterest_board';
 
       const resp = await fetch('/api/download-zip', {
         method: 'POST',
@@ -239,7 +244,7 @@ export default function App() {
       const blob = await resp.blob();
       const blobUrl = window.URL.createObjectURL(blob);
 
-      // Safe ASCII filename for browser a.download attribute to prevent Pattern mismatch DOMExceptions
+      // Safe ASCII filename for browser a.download attribute
       const asciiZipFilename = `${safeZipName.replace(/[^a-zA-Z0-9_\-]/g, '_') || 'board'}_${quality}.zip`;
 
       const a = document.createElement('a');
@@ -275,13 +280,9 @@ export default function App() {
       completed++;
       setProgressText(`1枚ずつ保存中 (${completed}/${selectedPins.length})...`);
       const rawUrl = getPinImageUrl(pin, quality);
-      const proxiedUrl = getProxiedImageUrl(rawUrl);
-      const safeTitle = (pin.title || 'pin')
-        .replace(/[^a-zA-Z0-9_\-\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uffef\u4e00-\u9faf]/g, '_')
-        .replace(/[\r\n]+/g, '')
-        .substring(0, 15);
-      const filename = `pin_${String(completed).padStart(3, '0')}_${safeTitle || 'img'}.jpg`;
-      await downloadSingleImage(proxiedUrl, filename);
+      const safeTitle = sanitizeTitle(pin.title || 'pin', 15);
+      const filename = `pin_${String(completed).padStart(3, '0')}_${safeTitle}.jpg`;
+      await downloadSingleImage(rawUrl, filename);
       // Brief pause to prevent browser popup block
       await new Promise((resolve) => setTimeout(resolve, 400));
     }
