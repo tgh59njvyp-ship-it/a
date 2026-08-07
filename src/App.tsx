@@ -214,55 +214,84 @@ export default function App() {
     await downloadSingleImage(rawUrl, filename);
   };
 
-  // Batch ZIP Download Handler
+  // Batch ZIP Download Handler (Chunked in packages of 40 images for 80+ image reliability)
   const handleDownloadZip = async () => {
     if (!board || selectedPinIds.size === 0) return;
 
     setIsDownloadingZip(true);
-    setProgressText(`全${selectedPinIds.size}枚の画像をZIPに圧縮中...`);
 
     try {
       const selectedPins = board.pins.filter((p) => selectedPinIds.has(p.id));
-      const imageUrls = selectedPins.map((p) => getPinImageUrl(p, quality));
-
       const rawTitle = board.title || 'pinterest_board';
       const safeZipName = sanitizeTitle(rawTitle, 25) || 'pinterest_board';
 
-      const resp = await fetch('/api/download-zip', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          imageUrls,
-          zipName: `${safeZipName}_${quality}`
-        })
-      });
-
-      if (!resp.ok) {
-        throw new Error('ZIP作成リクエストに失敗しました');
+      // Split into chunks of 40 images per ZIP package to prevent server/network timeouts with 80+ images
+      const CHUNK_SIZE = 40;
+      const chunks: PinItem[][] = [];
+      for (let i = 0; i < selectedPins.length; i += CHUNK_SIZE) {
+        chunks.push(selectedPins.slice(i, i + CHUNK_SIZE));
       }
 
-      const blob = await resp.blob();
-      const blobUrl = window.URL.createObjectURL(blob);
+      for (let cIdx = 0; cIdx < chunks.length; cIdx++) {
+        const chunkPins = chunks[cIdx];
+        const startNum = cIdx * CHUNK_SIZE + 1;
+        const endNum = startNum + chunkPins.length - 1;
 
-      // Safe ASCII filename for browser a.download attribute
-      const asciiZipFilename = `${safeZipName.replace(/[^a-zA-Z0-9_\-]/g, '_') || 'board'}_${quality}.zip`;
+        if (chunks.length > 1) {
+          setProgressText(`ZIP作成中 (${cIdx + 1}/${chunks.length}分冊): ${startNum}〜${endNum}枚目を処理中...`);
+        } else {
+          setProgressText(`全${chunkPins.length}枚の画像をZIPに圧縮中...`);
+        }
 
-      const a = document.createElement('a');
-      a.href = blobUrl;
-      a.download = asciiZipFilename;
-      document.body.appendChild(a);
-      a.click();
+        const imageUrls = chunkPins.map((p) => getPinImageUrl(p, quality));
+        const chunkZipName = chunks.length > 1 
+          ? `${safeZipName}_part${cIdx + 1}_(${startNum}-${endNum})`
+          : `${safeZipName}_${quality}`;
 
-      setTimeout(() => {
-        if (a.parentNode) document.body.removeChild(a);
-        window.URL.revokeObjectURL(blobUrl);
-      }, 1000);
+        const resp = await fetch('/api/download-zip', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            imageUrls,
+            zipName: chunkZipName
+          })
+        });
 
-      setProgressText('ZIPダウンロードを開始しました！');
+        if (!resp.ok) {
+          const errData = await resp.json().catch(() => ({}));
+          throw new Error(errData.error || `ZIP作成に失敗しました (パート ${cIdx + 1})`);
+        }
+
+        const blob = await resp.blob();
+        const blobUrl = window.URL.createObjectURL(blob);
+        const asciiZipFilename = `${chunkZipName.replace(/[^a-zA-Z0-9_\-()]/g, '_')}.zip`;
+
+        const a = document.createElement('a');
+        a.href = blobUrl;
+        a.download = asciiZipFilename;
+        document.body.appendChild(a);
+        a.click();
+
+        setTimeout(() => {
+          if (a.parentNode) document.body.removeChild(a);
+          window.URL.revokeObjectURL(blobUrl);
+        }, 1000);
+
+        // Pause briefly between chunk downloads if multiple parts
+        if (cIdx < chunks.length - 1) {
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+        }
+      }
+
+      setProgressText('ZIPダウンロードが完了しました！');
       setTimeout(() => setProgressText(''), 3000);
     } catch (err: any) {
       console.error('ZIP download error:', err);
-      alert('ZIP保存エラー: ' + (err.message || 'エラーが発生しました'));
+      let errMsg = err?.message || '';
+      if (!errMsg || /pattern|fetch|SyntaxError|unexpected/i.test(errMsg)) {
+        errMsg = 'ZIP作成中に一時的な通信エラーが発生しました。時間を置いてお試しください。';
+      }
+      setError(errMsg);
     } finally {
       setIsDownloadingZip(false);
     }
@@ -272,23 +301,40 @@ export default function App() {
   const handleDownloadSequential = async () => {
     if (!board || selectedPinIds.size === 0) return;
 
-    setIsSequentialDownloading(true);
     const selectedPins = board.pins.filter((p) => selectedPinIds.has(p.id));
 
+    if (selectedPins.length > 25) {
+      const confirmContinue = window.confirm(
+        `選択数が多いため (${selectedPins.length}枚)、ブラウザの自動保存制限がかかる場合があります。\n80枚以上の大量ダウンロードには「一括ZIPダウンロード」のご利用がおすすめです。\n\nこのまま1枚ずつ順次保存を開始しますか？`
+      );
+      if (!confirmContinue) return;
+    }
+
+    setIsSequentialDownloading(true);
+
     let completed = 0;
+    let failedCount = 0;
+
     for (const pin of selectedPins) {
       completed++;
       setProgressText(`1枚ずつ保存中 (${completed}/${selectedPins.length})...`);
       const rawUrl = getPinImageUrl(pin, quality);
       const safeTitle = sanitizeTitle(pin.title || 'pin', 15);
       const filename = `pin_${String(completed).padStart(3, '0')}_${safeTitle}.jpg`;
-      await downloadSingleImage(rawUrl, filename);
-      // Brief pause to prevent browser popup block
-      await new Promise((resolve) => setTimeout(resolve, 400));
+
+      const success = await downloadSingleImage(rawUrl, filename);
+      if (!success) failedCount++;
+
+      // Safe pause to prevent browser popup block
+      await new Promise((resolve) => setTimeout(resolve, 500));
     }
 
-    setProgressText('全画像の個別ダウンロードを試行しました');
-    setTimeout(() => setProgressText(''), 3000);
+    if (failedCount > 0) {
+      setProgressText(`保存完了 (${completed - failedCount}/${selectedPins.length}枚)。一部ブラウザ制限によりスキップされました。`);
+    } else {
+      setProgressText('全画像の1枚ずつ保存が完了しました！');
+    }
+    setTimeout(() => setProgressText(''), 4000);
     setIsSequentialDownloading(false);
   };
 

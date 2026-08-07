@@ -158,7 +158,14 @@ async function startServer() {
       const urlObj = new URL(cleanUrl);
 
       const pathname = urlObj.pathname.replace(/\/+$/, '');
-      const rawParts = pathname.split('/').filter(Boolean);
+      let rawParts = pathname.split('/').filter(Boolean);
+
+      // Strip language prefixes like 'ja', 'en', 'es', etc.
+      const langCodes = ['ja', 'en', 'en-us', 'es', 'fr', 'de', 'it', 'pt', 'ru', 'ko', 'zh', 'sent'];
+      if (rawParts.length > 0 && langCodes.includes(rawParts[0].toLowerCase())) {
+        rawParts.shift();
+      }
+
       const parts = rawParts.map((p) => {
         try {
           return decodeURIComponent(p);
@@ -177,7 +184,7 @@ async function startServer() {
           username: parts[0],
           boardName: parts[1]
         };
-      } else if (parts.length === 1 && parts[0] !== 'pin') {
+      } else if (parts.length === 1 && parts[0] !== 'pin' && parts[0] !== 'today' && parts[0] !== 'ideas') {
         return {
           username: parts[0],
           boardName: 'pins'
@@ -238,26 +245,34 @@ async function startServer() {
         return res.status(400).json({ error: 'At least one image URL is required' });
       }
 
+      // Limit max images per ZIP request to 100
+      const targetUrls = imageUrls.slice(0, 100);
+
       const zip = new JSZip();
       const folder = zip.folder('pins') || zip;
 
-      // Limit concurrent downloads to 10
-      const limit = 10;
-      for (let i = 0; i < imageUrls.length; i += limit) {
-        const chunk = imageUrls.slice(i, i + limit);
+      // Download images in parallel batches with timeout
+      const limit = 8;
+      for (let i = 0; i < targetUrls.length; i += limit) {
+        const chunk = targetUrls.slice(i, i + limit);
         await Promise.all(
           chunk.map(async (url: string, index: number) => {
             try {
               const imgIndex = i + index + 1;
+              const controller = new AbortController();
+              const timeoutId = setTimeout(() => controller.abort(), 8000);
+
               const resp = await safeFetch(url, {
+                signal: controller.signal,
                 headers: {
                   'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1',
                   'Referer': 'https://www.pinterest.com/'
                 }
               });
+              clearTimeout(timeoutId);
+
               if (resp.ok) {
                 const arrayBuffer = await resp.arrayBuffer();
-                // Determine extension
                 const contentType = resp.headers.get('content-type') || '';
                 let ext = 'jpg';
                 if (contentType.includes('png')) ext = 'png';
@@ -273,11 +288,12 @@ async function startServer() {
         );
       }
 
-      const zipBuffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+      // Use STORE (no heavy compression) for fast, low-memory ZIP generation
+      const zipBuffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'STORE' });
 
-      const asciiZipName = zipName.replace(/[^a-zA-Z0-9_\-]/g, '_') || 'pinterest_images';
+      const asciiZipName = String(zipName).replace(/[^a-zA-Z0-9_\-]/g, '_') || 'pinterest_images';
       res.setHeader('Content-Type', 'application/zip');
-      res.setHeader('Content-Disposition', `attachment; filename="${asciiZipName}.zip"; filename*=UTF-8''${encodeURIComponent(zipName)}.zip`);
+      res.setHeader('Content-Disposition', `attachment; filename="${asciiZipName}.zip"`);
       res.setHeader('Content-Length', zipBuffer.length.toString());
       res.send(zipBuffer);
     } catch (err: any) {
@@ -503,17 +519,17 @@ async function startServer() {
               }
             });
 
-            // If we found JSON state, attempt structured extraction
+            // Extract images from JSON scripts or __PWS_DATA__
             if (pwsDataJson) {
-              const jsonStr = JSON.stringify(pwsDataJson);
-              const imgMatches = jsonStr.match(/https:\/\/i\.pinimg\.com\/[^\s"'\\]+/g) || [];
+              const jsonStr = typeof pwsDataJson === 'string' ? pwsDataJson : JSON.stringify(pwsDataJson);
+              const imgMatches = jsonStr.match(/https?:\\?\/\\?\/i\.pinimg\.com\\?\/[^"'<>\s\\]+/gi) || [];
               imgMatches.forEach((rawImgUrl: string, idx: number) => {
                 const cleanUrl = String(rawImgUrl).replace(/\\/g, '');
                 if (!cleanUrl.includes('/75x75/') && !cleanUrl.includes('/30x30/')) {
                   const res = getHighResUrl(cleanUrl);
                   if (!extractedPins.some((p) => p.originalUrl === res.original)) {
                     extractedPins.push({
-                      id: `pin-json-${idx}`,
+                      id: `pin-json-${idx}-${Date.now()}`,
                       title: `Pin #${extractedPins.length + 1}`,
                       description: '',
                       originalUrl: res.original,
