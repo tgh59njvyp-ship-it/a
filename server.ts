@@ -95,15 +95,58 @@ async function startServer() {
     }
   }
 
-  async function safeFetch(urlStr: string, options?: RequestInit): Promise<Response> {
-    try {
-      const encodedUrl = safeEncodeUrl(urlStr);
-      if (!encodedUrl || !encodedUrl.startsWith('http')) {
-        return new Response(null, { status: 400, statusText: 'Invalid URL' });
+  async function safeFetch(urlStr: string, options: RequestInit = {}): Promise<Response> {
+    let currentUrl = safeEncodeUrl(urlStr);
+    if (!currentUrl || !currentUrl.startsWith('http')) {
+      return new Response(null, { status: 400, statusText: 'Invalid URL' });
+    }
+
+    const redirectMode = options.redirect || 'follow';
+    const cleanOptions: RequestInit = { ...options, redirect: 'manual' };
+
+    let redirectsCount = 0;
+    const maxRedirects = redirectMode === 'follow' ? 10 : 1;
+
+    while (redirectsCount < maxRedirects) {
+      try {
+        const resp = await fetch(currentUrl, cleanOptions);
+
+        if (redirectMode === 'follow' && [301, 302, 303, 307, 308].includes(resp.status)) {
+          const loc = resp.headers.get('location');
+          if (loc) {
+            redirectsCount++;
+            try {
+              const absoluteLoc = new URL(loc, currentUrl).href;
+              currentUrl = safeEncodeUrl(absoluteLoc);
+            } catch {
+              currentUrl = safeEncodeUrl(loc);
+            }
+            continue;
+          }
+        }
+
+        try {
+          Object.defineProperty(resp, 'url', { value: currentUrl, writable: false });
+        } catch {
+          // Ignore if property is non-configurable
+        }
+
+        return resp;
+      } catch (err: any) {
+        console.error('safeFetch step exception at:', currentUrl, err?.message);
+        return new Response(null, { status: 500, statusText: 'Fetch exception' });
       }
-      return await fetch(encodedUrl, options);
+    }
+
+    try {
+      const resp = await fetch(currentUrl, cleanOptions);
+      try {
+        Object.defineProperty(resp, 'url', { value: currentUrl, writable: false });
+      } catch {
+        // Ignore
+      }
+      return resp;
     } catch (err: any) {
-      console.error('safeFetch caught exception:', urlStr, err?.message);
       return new Response(null, { status: 500, statusText: 'Fetch exception' });
     }
   }
@@ -294,7 +337,8 @@ async function startServer() {
           });
           if (getResp.url) {
             targetUrl = getResp.url;
-          } else {
+          }
+          if (getResp.ok) {
             const html = await getResp.text();
             const $ = cheerio.load(html);
             const canonical = $('link[rel="canonical"]').attr('href') || $('meta[property="og:url"]').attr('content');
