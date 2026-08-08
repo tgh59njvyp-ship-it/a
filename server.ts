@@ -27,6 +27,34 @@ async function startServer() {
     return new GoogleGenAI({ apiKey });
   };
 
+  // Helper to filter out avatars, logos, UI icons, and unrelated non-pin images
+  function isValidPinImageUrl(url: string): boolean {
+    if (!url || typeof url !== 'string') return false;
+    if (!url.includes('pinimg.com')) return false;
+
+    const lower = url.toLowerCase();
+    // Filter out profile avatars, tiny icons, logos, site UI elements
+    if (
+      lower.includes('/avatars/') ||
+      lower.includes('/75x75/') ||
+      lower.includes('/30x30/') ||
+      lower.includes('/60x60/') ||
+      lower.includes('/150x150/') ||
+      lower.includes('/70x70/') ||
+      lower.includes('/100x100/') ||
+      lower.includes('profile_') ||
+      lower.includes('user_') ||
+      lower.includes('logo') ||
+      lower.includes('icon') ||
+      lower.includes('favicon')
+    ) {
+      return false;
+    }
+
+    // Must contain pin image resolution folder
+    return /\/(originals|736x|564x|474x|236x)\//i.test(lower);
+  }
+
   // Helper to construct HD Pinterest Image URLs
   function getHighResUrl(imgUrl: string): { original: string; medium: string; thumbnail: string } {
     if (!imgUrl) return { original: '', medium: '', thumbnail: '' };
@@ -151,6 +179,58 @@ async function startServer() {
     }
   }
 
+  // Helper to recursively extract pin objects from deep Pinterest JSON responses
+  function extractPinsFromObject(
+    obj: any,
+    targetUrl: string,
+    defaultBoardTitle: string,
+    extractedPins: PinItem[],
+    visited = new WeakSet()
+  ) {
+    if (!obj || typeof obj !== 'object') return;
+    if (visited.has(obj)) return;
+    visited.add(obj);
+
+    // Check if obj represents a Pinterest Pin object
+    if (obj.images && (obj.images.orig || obj.images['736x'] || obj.images['564x'] || obj.images['236x'])) {
+      const imgObj =
+        obj.images?.orig?.url ||
+        obj.images?.['736x']?.url ||
+        obj.images?.['564x']?.url ||
+        obj.images?.['236x']?.url;
+
+      if (imgObj && isValidPinImageUrl(imgObj)) {
+        const res = getHighResUrl(imgObj);
+        if (!extractedPins.some((p) => p.originalUrl === res.original)) {
+          const rawTitle = obj.title || obj.grid_title || obj.description || `Pin #${extractedPins.length + 1}`;
+          const title = String(rawTitle).trim();
+          extractedPins.push({
+            id: obj.id ? String(obj.id) : `pin-obj-${extractedPins.length}`,
+            title: title.length > 60 ? title.substring(0, 60) + '...' : title,
+            description: String(obj.description || ''),
+            originalUrl: res.original,
+            mediumUrl: res.medium,
+            thumbnailUrl: res.thumbnail,
+            link: obj.id ? `https://www.pinterest.com/pin/${obj.id}/` : targetUrl,
+            boardTitle: obj.board?.name || defaultBoardTitle || 'Pinterest Board'
+          });
+        }
+      }
+    }
+
+    if (Array.isArray(obj)) {
+      for (const item of obj) {
+        extractPinsFromObject(item, targetUrl, defaultBoardTitle, extractedPins, visited);
+      }
+    } else {
+      for (const k of Object.keys(obj)) {
+        if (k !== 'board' && typeof obj[k] === 'object') {
+          extractPinsFromObject(obj[k], targetUrl, defaultBoardTitle, extractedPins, visited);
+        }
+      }
+    }
+  }
+
   // Helper to extract Pinterest board path: /username/boardname/
   function parsePinterestUrl(rawUrl: string): { username?: string; boardName?: string; isPin?: boolean; pinId?: string } | null {
     try {
@@ -207,6 +287,9 @@ async function startServer() {
   app.get('/api/proxy-image', async (req, res) => {
     try {
       const imageUrl = req.query.url as string;
+      const downloadParam = req.query.download === 'true';
+      const filenameParam = (req.query.filename as string) || 'pinterest_image.jpg';
+
       if (!imageUrl) {
         return res.status(400).send('Image URL is required');
       }
@@ -230,6 +313,14 @@ async function startServer() {
       res.setHeader('Content-Type', contentType);
       res.setHeader('Cache-Control', 'public, max-age=86400');
       res.setHeader('Access-Control-Allow-Origin', '*');
+
+      const safeFilename = filenameParam.replace(/[^a-zA-Z0-9_\-.]/g, '_');
+      if (downloadParam) {
+        res.setHeader('Content-Disposition', `attachment; filename="${safeFilename}"`);
+      } else {
+        res.setHeader('Content-Disposition', `inline; filename="${safeFilename}"`);
+      }
+
       res.send(buffer);
     } catch (err: any) {
       console.error('Image proxy error:', err);
@@ -409,8 +500,168 @@ async function startServer() {
         }
       }
 
-      // Method 1: Try Pinterest RSS Feed (Very reliable for public boards)
-      if (parsed?.username && parsed?.boardName && !parsed.isPin) {
+      // Method 1: Fetch board HTML first to extract all script JSON embedded pins & board details
+      if (!parsed?.isPin) {
+        try {
+          const pageResp = await safeFetch(targetUrl, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+              'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8',
+              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+            }
+          });
+
+          if (pageResp.ok) {
+            const html = await pageResp.text();
+            const $ = cheerio.load(html);
+
+            const ogTitle = $('meta[property="og:title"]').attr('content') || $('title').text();
+            if (ogTitle) boardTitle = ogTitle.replace(/\|.*$/, '').trim();
+
+            const ogDesc = $('meta[property="og:description"]').attr('content') || $('meta[name="description"]').attr('content');
+            if (ogDesc) boardDesc = ogDesc;
+
+            // 1. Parse __PWS_DATA__ JSON script tag if present
+            const pwsScript = $('#__PWS_DATA__').html();
+            if (pwsScript) {
+              try {
+                const pwsObj = JSON.parse(pwsScript);
+                extractPinsFromObject(pwsObj, targetUrl, boardTitle, extractedPins);
+              } catch (pwsErr) {
+                console.log('PWS_DATA parse warning:', pwsErr);
+              }
+            }
+
+            // 2. Extract images from all <script> JSON blocks
+            $('script').each((_, script) => {
+              const text = $(script).html() || '';
+              if (text.includes('pinimg.com')) {
+                const imgMatches = text.match(/https?:\\?\/\\?\/i\.pinimg\.com\\?\/[^\s"'<>\\]+/gi) || [];
+                imgMatches.forEach((rawImgUrl: string, idx: number) => {
+                  const cleanUrl = String(rawImgUrl).replace(/\\/g, '');
+                  if (isValidPinImageUrl(cleanUrl)) {
+                    const res = getHighResUrl(cleanUrl);
+                    if (!extractedPins.some((p) => p.originalUrl === res.original)) {
+                      extractedPins.push({
+                        id: `pin-script-${idx}-${extractedPins.length}`,
+                        title: `Pin #${extractedPins.length + 1}`,
+                        description: '',
+                        originalUrl: res.original,
+                        mediumUrl: res.medium,
+                        thumbnailUrl: res.thumbnail,
+                        link: targetUrl,
+                        boardTitle: boardTitle || 'Pinterest Board'
+                      });
+                    }
+                  }
+                });
+              }
+            });
+
+            // 3. Extract images from <img> tags as well
+            $('img').each((i, img) => {
+              const src = $(img).attr('src') || $(img).attr('data-src');
+              const alt = $(img).attr('alt') || `Pin #${i + 1}`;
+              if (src && isValidPinImageUrl(src)) {
+                const res = getHighResUrl(src);
+                if (!extractedPins.some((p) => p.originalUrl === res.original)) {
+                  extractedPins.push({
+                    id: `pin-html-${i}-${extractedPins.length}`,
+                    title: alt.length > 50 ? alt.substring(0, 50) + '...' : alt,
+                    description: alt,
+                    originalUrl: res.original,
+                    mediumUrl: res.medium,
+                    thumbnailUrl: res.thumbnail,
+                    link: targetUrl,
+                    boardTitle: boardTitle || 'Pinterest Board'
+                  });
+                }
+              }
+            });
+
+            // 4. Try Pinterest Board Resource API with board_id or username/slug to fetch deep pages of pins
+            const boardIdMatch = html.match(/"board_id":"(\d+)"/i) || html.match(/"id":"(\d+)"/i);
+            const boardId = boardIdMatch ? boardIdMatch[1] : null;
+
+            const apiEndpointsToTry: Array<{ resource: string; options: any }> = [];
+
+            if (boardId) {
+              apiEndpointsToTry.push(
+                { resource: 'BoardPinsResource', options: { board_id: boardId, page_size: 250 } },
+                { resource: 'BoardFeedResource', options: { board_id: boardId, page_size: 250, field_set_key: 'react_grid_pin' } }
+              );
+            }
+
+            if (parsed?.username && parsed?.boardName) {
+              apiEndpointsToTry.push(
+                { resource: 'BoardPinsResource', options: { username: parsed.username, slug: parsed.boardName, page_size: 250 } },
+                { resource: 'BoardFeedResource', options: { username: parsed.username, slug: parsed.boardName, page_size: 250, field_set_key: 'unauth_react_main_pin' } }
+              );
+            }
+
+            for (const endpointConfig of apiEndpointsToTry) {
+              try {
+                let bookmark: string | null = null;
+                let hasMore = true;
+                let fetchCount = 0;
+
+                while (hasMore && fetchCount < 10) {
+                  fetchCount++;
+                  const currentOpts: any = { ...endpointConfig.options };
+                  if (bookmark) {
+                    currentOpts.bookmarks = [bookmark];
+                  }
+
+                  const dataPayload = {
+                    options: currentOpts,
+                    context: {}
+                  };
+
+                  const apiUrl = `https://www.pinterest.com/resource/${endpointConfig.resource}/get/?data=${encodeURIComponent(
+                    JSON.stringify(dataPayload)
+                  )}`;
+
+                  const apiResp = await safeFetch(apiUrl, {
+                    headers: {
+                      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+                      'X-Requested-With': 'XMLHttpRequest',
+                      'X-Pinterest-AppState': 'active',
+                      'Accept': 'application/json, text/javascript, */*; q=0.01',
+                      'Referer': targetUrl
+                    }
+                  });
+
+                  if (apiResp.ok) {
+                    const apiData = await apiResp.json();
+
+                    extractPinsFromObject(apiData, targetUrl, boardTitle, extractedPins);
+
+                    const nextBookmark =
+                      apiData?.resource_response?.bookmark ||
+                      apiData?.resource_response?.data?.bookmark ||
+                      apiData?.bookmark;
+
+                    if (nextBookmark && nextBookmark !== bookmark && nextBookmark !== '-end-') {
+                      bookmark = nextBookmark;
+                    } else {
+                      hasMore = false;
+                    }
+                  } else {
+                    hasMore = false;
+                  }
+                }
+              } catch (apiErr) {
+                console.log(`Resource API ${endpointConfig.resource} error:`, apiErr);
+              }
+            }
+          }
+        } catch (pageErr) {
+          console.error('HTML fetch error:', pageErr);
+        }
+      }
+
+      // Method 3: Try RSS Feed as additional fallback if needed (Max 25)
+      if (extractedPins.length === 0 && parsed?.username && parsed?.boardName && !parsed.isPin) {
         const safeUser = encodeURIComponent(parsed.username);
         const safeBoard = encodeURIComponent(parsed.boardName);
         const rssUrl = `https://www.pinterest.com/${safeUser}/${safeBoard}.rss`;
@@ -436,115 +687,29 @@ async function startServer() {
               const itemGuid = $(elem).find('guid').text().trim();
               const descHtml = $(elem).find('description').text();
 
-              // Extract image src inside description CDATA HTML
               if (descHtml) {
                 const $desc = cheerio.load(descHtml);
                 const imgSrc = $desc('img').attr('src');
-                if (imgSrc) {
+                if (imgSrc && isValidPinImageUrl(imgSrc)) {
                   const res = getHighResUrl(imgSrc);
-                  extractedPins.push({
-                    id: itemGuid || `pin-rss-${idx}-${Date.now()}`,
-                    title: itemTitle,
-                    description: $desc.text().trim(),
-                    originalUrl: res.original,
-                    mediumUrl: res.medium,
-                    thumbnailUrl: res.thumbnail,
-                    link: itemLink || targetUrl,
-                    boardTitle
-                  });
+                  if (!extractedPins.some((p) => p.originalUrl === res.original)) {
+                    extractedPins.push({
+                      id: itemGuid || `pin-rss-${idx}`,
+                      title: itemTitle,
+                      description: $desc.text().trim(),
+                      originalUrl: res.original,
+                      mediumUrl: res.medium,
+                      thumbnailUrl: res.thumbnail,
+                      link: itemLink || targetUrl,
+                      boardTitle
+                    });
+                  }
                 }
               }
             });
           }
         } catch (rssErr) {
-          console.log('RSS Fetch failed, trying direct page fetch...', rssErr);
-        }
-      }
-
-      // Method 2: Fetch HTML page directly if RSS didn't yield pins
-      if (extractedPins.length === 0) {
-        try {
-          const pageResp = await safeFetch(targetUrl, {
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-              'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8',
-              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-            }
-          });
-
-          if (pageResp.ok) {
-            const html = await pageResp.text();
-            const $ = cheerio.load(html);
-
-            // Try OpenGraph title & description
-            const ogTitle = $('meta[property="og:title"]').attr('content') || $('title').text();
-            if (ogTitle) boardTitle = ogTitle.replace(/\|.*$/, '').trim();
-            boardDesc = $('meta[property="og:description"]').attr('content') || '';
-
-            // Look for __PWS_DATA__ or initial-state JSON script blocks
-            let pwsDataJson: any = null;
-            $('script').each((_, script) => {
-              const id = $(script).attr('id');
-              const text = $(script).html() || '';
-              if (id === '__PWS_DATA__' || text.includes('PWSData') || text.includes('initialData')) {
-                try {
-                  pwsDataJson = JSON.parse(text);
-                } catch {
-                  // Ignore parse error
-                }
-              }
-            });
-
-            // Extract images from HTML directly via img tags & srcset
-            $('img').each((i, img) => {
-              const src = $(img).attr('src') || $(img).attr('data-src');
-              const alt = $(img).attr('alt') || `Pin #${i + 1}`;
-              if (src && src.includes('pinimg.com')) {
-                const res = getHighResUrl(src);
-                // Avoid tiny icons/avatars
-                if (!src.includes('/75x75/') && !src.includes('/30x30/')) {
-                  if (!extractedPins.some((p) => p.originalUrl === res.original)) {
-                    extractedPins.push({
-                      id: `pin-html-${i}-${Date.now()}`,
-                      title: alt.length > 50 ? alt.substring(0, 50) + '...' : alt,
-                      description: alt,
-                      originalUrl: res.original,
-                      mediumUrl: res.medium,
-                      thumbnailUrl: res.thumbnail,
-                      link: targetUrl,
-                      boardTitle
-                    });
-                  }
-                }
-              }
-            });
-
-            // Extract images from JSON scripts or __PWS_DATA__
-            if (pwsDataJson) {
-              const jsonStr = typeof pwsDataJson === 'string' ? pwsDataJson : JSON.stringify(pwsDataJson);
-              const imgMatches = jsonStr.match(/https?:\\?\/\\?\/i\.pinimg\.com\\?\/[^"'<>\s\\]+/gi) || [];
-              imgMatches.forEach((rawImgUrl: string, idx: number) => {
-                const cleanUrl = String(rawImgUrl).replace(/\\/g, '');
-                if (!cleanUrl.includes('/75x75/') && !cleanUrl.includes('/30x30/')) {
-                  const res = getHighResUrl(cleanUrl);
-                  if (!extractedPins.some((p) => p.originalUrl === res.original)) {
-                    extractedPins.push({
-                      id: `pin-json-${idx}-${Date.now()}`,
-                      title: `Pin #${extractedPins.length + 1}`,
-                      description: '',
-                      originalUrl: res.original,
-                      mediumUrl: res.medium,
-                      thumbnailUrl: res.thumbnail,
-                      link: targetUrl,
-                      boardTitle
-                    });
-                  }
-                }
-              });
-            }
-          }
-        } catch (pageErr) {
-          console.error('HTML fetch error:', pageErr);
+          console.log('RSS Feed fetch error:', rssErr);
         }
       }
 

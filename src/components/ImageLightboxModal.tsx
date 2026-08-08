@@ -1,7 +1,7 @@
 import React from 'react';
 import { PinItem, ImageQuality } from '../types';
-import { getPinImageUrl, getProxiedImageUrl } from '../utils/downloader';
-import { X, Download, ExternalLink, ChevronLeft, ChevronRight, Share2 } from 'lucide-react';
+import { getPinImageUrl, getProxiedImageUrl, saveToApplePhotos } from '../utils/downloader';
+import { X, Download, ExternalLink, ChevronLeft, ChevronRight, Share2, Smartphone } from 'lucide-react';
 
 interface ImageLightboxModalProps {
   pin: PinItem | null;
@@ -113,11 +113,23 @@ export const ImageLightboxModal: React.FC<ImageLightboxModalProps> = ({
             )}
 
             <button
-              onClick={() => onDownloadSingle(pin)}
-              className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 text-white font-bold text-xs flex items-center gap-1.5 shadow-md active:scale-95 transition"
+              onClick={async () => {
+                const rawUrl = getPinImageUrl(pin, quality);
+                const filename = `pin_${pin.id || Date.now()}.jpg`;
+                await saveToApplePhotos(rawUrl, filename);
+              }}
+              className="px-3 py-2.5 rounded-xl bg-gradient-to-r from-rose-600 via-rose-500 to-pink-600 hover:from-rose-500 hover:to-pink-500 text-white font-bold text-xs flex items-center gap-1.5 shadow-md active:scale-95 transition"
             >
-              <Download className="w-4 h-4" />
-              <span>この画像を保存</span>
+              <Smartphone className="w-4 h-4" />
+              <span>写真アプリに保存</span>
+            </button>
+
+            <button
+              onClick={() => onDownloadSingle(pin)}
+              className="p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs flex items-center gap-1.5 transition active:scale-95"
+              title="ファイルとして保存"
+            >
+              <Download className="w-4 h-4 text-rose-400" />
             </button>
           </div>
         </div>

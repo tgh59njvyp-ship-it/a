@@ -7,6 +7,7 @@ import { StickyDownloadBar } from './components/StickyDownloadBar';
 import { ImageLightboxModal } from './components/ImageLightboxModal';
 import { UsageGuideModal } from './components/UsageGuideModal';
 import { HistoryModal } from './components/HistoryModal';
+import { PhotosSaveModal } from './components/PhotosSaveModal';
 import { BoardData, PinItem, ImageQuality, SearchHistoryItem } from './types';
 import { PRESET_BOARDS } from './data/presetBoards';
 import {
@@ -35,6 +36,7 @@ export default function App() {
   const [activeLightboxPin, setActiveLightboxPin] = useState<PinItem | null>(null);
   const [isGuideOpen, setIsGuideOpen] = useState<boolean>(false);
   const [isHistoryOpen, setIsHistoryOpen] = useState<boolean>(false);
+  const [isPhotosModalOpen, setIsPhotosModalOpen] = useState<boolean>(false);
   const [history, setHistory] = useState<SearchHistoryItem[]>([]);
 
   // Action states
@@ -153,7 +155,11 @@ export default function App() {
       }
     } catch (err: any) {
       console.error('Fetch board error:', err);
-      setError(err?.message || '画像の取得に失敗しました。公開設定のPinterestボードURLかpin.it短縮URLをお試しください。');
+      let errMsg = err?.message || '';
+      if (!errMsg || /pattern|match|SyntaxError|DOMException|fetch|Failed to fetch/i.test(errMsg)) {
+        errMsg = '画像の取得処理でエラーが発生しました。公開設定のPinterestボードURLまたはpin.it短縮URLをご確認ください。';
+      }
+      setError(errMsg);
     } finally {
       setIsLoading(false);
     }
@@ -245,7 +251,7 @@ export default function App() {
 
         const imageUrls = chunkPins.map((p) => getPinImageUrl(p, quality));
         const chunkZipName = chunks.length > 1 
-          ? `${safeZipName}_part${cIdx + 1}_(${startNum}-${endNum})`
+          ? `${safeZipName}_part${cIdx + 1}_${startNum}_${endNum}`
           : `${safeZipName}_${quality}`;
 
         const resp = await fetch('/api/download-zip', {
@@ -264,17 +270,23 @@ export default function App() {
 
         const blob = await resp.blob();
         const blobUrl = window.URL.createObjectURL(blob);
-        const asciiZipFilename = `${chunkZipName.replace(/[^a-zA-Z0-9_\-()]/g, '_')}.zip`;
+        // Extremely safe ASCII filename for browser a.download attribute to avoid DOMExceptions
+        const cleanAsciiName = chunkZipName.replace(/[^a-zA-Z0-9_]/g, '_').replace(/_+/g, '_');
+        const asciiZipFilename = `${cleanAsciiName || 'pinterest_board'}.zip`;
 
         const a = document.createElement('a');
         a.href = blobUrl;
-        a.download = asciiZipFilename;
+        a.setAttribute('download', asciiZipFilename);
         document.body.appendChild(a);
         a.click();
 
         setTimeout(() => {
-          if (a.parentNode) document.body.removeChild(a);
-          window.URL.revokeObjectURL(blobUrl);
+          try {
+            if (a.parentNode) document.body.removeChild(a);
+            window.URL.revokeObjectURL(blobUrl);
+          } catch {
+            // Ignore
+          }
         }, 1000);
 
         // Pause briefly between chunk downloads if multiple parts
@@ -456,6 +468,7 @@ export default function App() {
             selectedCount={selectedPinIds.size}
             totalCount={board.pins.length}
             onDownloadZip={handleDownloadZip}
+            onOpenPhotosModal={() => setIsPhotosModalOpen(true)}
             onDownloadSequential={handleDownloadSequential}
             onCopyUrls={handleCopyUrls}
             isDownloadingZip={isDownloadingZip}
@@ -484,6 +497,16 @@ export default function App() {
         isOpen={isGuideOpen}
         onClose={() => setIsGuideOpen(false)}
       />
+
+      {/* Apple Photos Save Modal */}
+      {board && (
+        <PhotosSaveModal
+          isOpen={isPhotosModalOpen}
+          onClose={() => setIsPhotosModalOpen(false)}
+          selectedPins={board.pins.filter((p) => selectedPinIds.has(p.id))}
+          quality={quality}
+        />
+      )}
 
       {/* Search History Modal */}
       <HistoryModal
